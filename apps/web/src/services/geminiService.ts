@@ -1,0 +1,503 @@
+import { WorkflowResult, Tool } from '../types';
+import { CURATED_TOOLS } from '../data/knowledgeData';
+
+const KEY_STORAGE_KEY = 'pathwise_gemini_api_key';
+const MODEL_STORAGE_KEY = 'pathwise_gemini_model';
+
+export const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash-latest';
+
+export interface ModelOption {
+  id: string;
+  name: string;
+  recommended?: boolean;
+}
+
+export interface QuestionnaireItem {
+  id: string;
+  question: string;
+  options: string[];
+  defaultOption: string;
+}
+
+export const FALLBACK_GEMINI_MODELS: ModelOption[] = [
+  { id: 'gemini-1.5-flash-latest', name: 'Gemini 1.5 Flash (Latest)', recommended: true },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
+  { id: 'gemini-1.5-flash-001', name: 'Gemini 1.5 Flash (v001)' },
+  { id: 'gemini-1.5-flash-002', name: 'Gemini 1.5 Flash (v002)' },
+  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash (Experimental)' },
+  { id: 'gemini-1.5-pro-latest', name: 'Gemini 1.5 Pro (Latest)' },
+  { id: 'gemini-pro', name: 'Gemini 1.0 Pro' },
+];
+
+export function getGeminiApiKey(): string {
+  const stored = localStorage.getItem(KEY_STORAGE_KEY);
+  if (stored) return stored.trim();
+  const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+  return envKey ? envKey.trim() : '';
+}
+
+export function setGeminiApiKey(key: string): void {
+  if (key.trim()) {
+    localStorage.setItem(KEY_STORAGE_KEY, key.trim());
+  } else {
+    localStorage.removeItem(KEY_STORAGE_KEY);
+  }
+}
+
+export function getGeminiModel(): string {
+  return localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_GEMINI_MODEL;
+}
+
+export function setGeminiModel(model: string): void {
+  localStorage.setItem(MODEL_STORAGE_KEY, model);
+}
+
+/**
+ * Queries Google's ModelService.ListModels endpoint using the user's API key.
+ */
+export async function fetchAvailableModels(apiKey?: string): Promise<ModelOption[]> {
+  const key = (apiKey || getGeminiApiKey()).trim();
+  if (!key) return FALLBACK_GEMINI_MODELS;
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      return FALLBACK_GEMINI_MODELS;
+    }
+
+    const data = await response.json();
+    const rawModels: any[] = data.models || [];
+
+    const available = rawModels
+      .filter((m: any) => {
+        const name = (m.name || '').toLowerCase();
+        const supportsGen = m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent');
+        const isSpecialized = name.includes('-tts') || name.includes('embedding') || name.includes('aqa') || name.includes('bison') || name.includes('imagen');
+        return supportsGen && !isSpecialized;
+      })
+      .map((m: any) => {
+        const cleanId = m.name.replace('models/', '');
+        return {
+          id: cleanId,
+          name: m.displayName ? `${m.displayName} (${cleanId})` : cleanId,
+          recommended: cleanId.includes('flash')
+        };
+      });
+
+    if (available.length > 0) {
+      return available;
+    }
+  } catch (e) {
+    console.warn('Could not query ListModels from Gemini API:', e);
+  }
+
+  return FALLBACK_GEMINI_MODELS;
+}
+
+/**
+ * Helper to call Gemini REST API with rate-limit detection and model fallback.
+ */
+async function fetchGeminiApi(
+  apiKey: string,
+  preferredModel: string,
+  requestBody: any
+): Promise<{ data: any; workingModel: string }> {
+  let availableModelIds: string[] = [];
+  try {
+    const fetched = await fetchAvailableModels(apiKey);
+    availableModelIds = fetched.map(m => m.id);
+  } catch (e) {
+    // fallback if list API fails
+  }
+
+  const candidateModels = Array.from(new Set([
+    preferredModel,
+    ...availableModelIds,
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-001',
+    'gemini-1.5-flash-002',
+    'gemini-2.0-flash-exp',
+    'gemini-1.5-pro-latest',
+    'gemini-pro'
+  ])).filter(m => !m.toLowerCase().includes('-tts') && !m.toLowerCase().includes('embedding'));
+
+  let lastErrorMsg = '';
+
+  for (const model of candidateModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (model !== preferredModel) {
+          setGeminiModel(model);
+        }
+        return { data, workingModel: model };
+      }
+
+      const errData = await response.json().catch(() => ({}));
+      const msg = errData.error?.message || `HTTP ${response.status}`;
+      lastErrorMsg = msg;
+
+      if (response.status === 429 || msg.includes('Quota exceeded') || msg.includes('RESOURCE_EXHAUSTED')) {
+        throw new Error(`Gemini Free Tier Rate Limit reached. Please wait a moment before retrying.`);
+      }
+
+      if (response.status === 400 && msg.includes('API_KEY_INVALID')) {
+        throw new Error(`Invalid Gemini API Key: ${msg}`);
+      }
+
+      if (!msg.toLowerCase().includes('not found') && !msg.toLowerCase().includes('supported') && response.status !== 404) {
+        throw new Error(msg);
+      }
+    } catch (err: any) {
+      if (err.message && (err.message.includes('Rate Limit') || err.message.includes('Quota exceeded') || err.message.includes('API_KEY_INVALID'))) {
+        throw err;
+      }
+      if (err.message && !err.message.toLowerCase().includes('not found') && !err.message.toLowerCase().includes('supported')) {
+        throw err;
+      }
+      lastErrorMsg = err.message || 'Model call failed.';
+    }
+  }
+
+  throw new Error(`Gemini API Error: ${lastErrorMsg}`);
+}
+
+/**
+ * Validates a Gemini API Key.
+ */
+export async function testGeminiApiKey(apiKey: string, modelName?: string): Promise<{ success: boolean; message: string }> {
+  const key = apiKey.trim();
+  if (!key) {
+    return { success: false, message: 'Please enter an API Key.' };
+  }
+
+  const model = modelName || getGeminiModel();
+
+  try {
+    const { workingModel } = await fetchGeminiApi(key, model, {
+      contents: [{ parts: [{ text: 'Respond with "OK" if connected.' }] }]
+    });
+
+    return {
+      success: true,
+      message: `Connected successfully using model "${workingModel}"!`
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: err.message || 'Failed to authenticate key.'
+    };
+  }
+}
+
+/**
+ * Executes a single prompt live via Gemini API and returns the generated text.
+ */
+export async function runPromptWithGemini(promptText: string): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API Key is missing. Please check your .env configuration.');
+  }
+
+  const model = getGeminiModel();
+  const { data } = await fetchGeminiApi(apiKey, model, {
+    contents: [{ parts: [{ text: promptText }] }],
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 1500,
+    }
+  });
+
+  const candidate = data.candidates?.[0];
+  const outputText = candidate?.content?.parts?.[0]?.text;
+
+  if (!outputText) {
+    throw new Error('Gemini API returned an empty response.');
+  }
+
+  return outputText;
+}
+
+/**
+ * Generates 2-3 dynamic targeted questions to clarify the user's specs before generating a workflow.
+ */
+export async function generateQuestionnaireWithGemini(goal: string): Promise<QuestionnaireItem[]> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return getFallbackQuestionnaire(goal);
+  }
+
+  const model = getGeminiModel();
+  const prompt = `You are Pathwise AI — an intelligent creation assistant. The user wants to create: "${goal}".
+Generate 2-3 interactive, domain-specific multiple-choice follow-up questions to understand their technical specifications, preferred tools, target platform, or budget BEFORE generating a workflow.
+
+Return ONLY a valid JSON array of objects with this structure without any markdown:
+[
+  {
+    "id": "platform",
+    "question": "Which trading platform and language do you plan to use?",
+    "options": ["MetaTrader 4 (MQL4)", "MetaTrader 5 (MQL5)", "TradingView (PineScript)", "Python Bot"],
+    "defaultOption": "MetaTrader 4 (MQL4)"
+  }
+]`;
+
+  try {
+    const { data } = await fetchGeminiApi(apiKey, model, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 1000,
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (rawText) {
+      const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleaned) as QuestionnaireItem[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('Gemini Questionnaire generation failed, falling back:', e);
+  }
+
+  return getFallbackQuestionnaire(goal);
+}
+
+export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
+  const g = goal.toLowerCase();
+  
+  if (
+    g.includes('trading') ||
+    g.includes('ea') ||
+    g.includes('expert advisor') ||
+    g.includes('forex') ||
+    g.includes('bot') ||
+    g.includes('mql') ||
+    g.includes('pinescript')
+  ) {
+    return [
+      {
+        id: 'platform',
+        question: 'Which trading platform and programming language do you plan to use?',
+        options: ['MetaTrader 4 (MQL4)', 'MetaTrader 5 (MQL5)', 'TradingView (PineScript)', 'Python Trading Bot'],
+        defaultOption: 'MetaTrader 4 (MQL4)'
+      },
+      {
+        id: 'strategy',
+        question: 'What core indicator & entry strategy will your EA execute?',
+        options: ['Moving Average Crossover + RSI', 'Grid / Martingale Execution', 'Breakout & Volatility', 'Price Action & Support/Resistance'],
+        defaultOption: 'Moving Average Crossover + RSI'
+      },
+      {
+        id: 'risk',
+        question: 'How should the EA manage risk & order sizing?',
+        options: ['Dynamic Account Risk % per trade', 'Fixed Lot Size (e.g. 0.10)', 'Trailing Stop & Break-even'],
+        defaultOption: 'Dynamic Account Risk % per trade'
+      }
+    ];
+  }
+
+  if (g.includes('code') || g.includes('script') || g.includes('app') || g.includes('python') || g.includes('web')) {
+    return [
+      {
+        id: 'type',
+        question: 'What style of software project are you building?',
+        options: ['Fullstack Web App / React', 'Backend API / Python Script', 'Automation Bot / Pipeline'],
+        defaultOption: 'Fullstack Web App / React'
+      },
+      {
+        id: 'tool_choice',
+        question: 'Which AI development tool or environment do you prefer?',
+        options: ['ChatGPT (GPT-4o)', 'Claude 3.5 Sonnet', 'Antigravity AI (Google)', 'v0 / Bolt.new (No Code)'],
+        defaultOption: 'ChatGPT (GPT-4o)'
+      }
+    ];
+  }
+
+  return [
+    {
+      id: 'output_type',
+      question: 'What is your primary target deliverable format?',
+      options: ['Digital Guide / Content', 'Interactive Web Project', 'Social Media Campaign'],
+      defaultOption: 'Digital Guide / Content'
+    },
+    {
+      id: 'budget_tier',
+      question: 'What is your preferred AI tool budget tier?',
+      options: ['Free & Freemium Tools Only', 'Pro Paid AI Suite'],
+      defaultOption: 'Free & Freemium Tools Only'
+    }
+  ];
+}
+
+/**
+ * Generates a domain-accurate, highly practical workflow using Gemini AI reasoning based on user answers.
+ */
+export async function generateWorkflowWithGemini(
+  goal: string,
+  explicitAssumptions?: Record<string, string>
+): Promise<WorkflowResult> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('Gemini API Key not set.');
+  }
+
+  const model = getGeminiModel();
+
+  const toolsSummary = CURATED_TOOLS.map(t => ({
+    id: t.id,
+    name: t.name,
+    category: t.category,
+    description: t.description,
+    pricingModel: t.pricingModel,
+    pricingDetails: t.pricingDetails,
+    skillLevel: t.skillLevel,
+    websiteUrl: t.websiteUrl,
+    whyRecommended: t.whyRecommended,
+    rating: t.rating,
+    logoText: t.logoText,
+    keyFeatures: t.keyFeatures
+  }));
+
+  const userSpecsText = explicitAssumptions ? JSON.stringify(explicitAssumptions) : 'Standard defaults';
+
+  const systemPrompt = `You are Pathwise AI — an intelligent, domain-expert AI workflow architect.
+
+User Goal: "${goal}"
+User Specified Answers to Follow-Up Questions: ${userSpecsText}
+
+Curated Tools Catalog:
+${JSON.stringify(toolsSummary, null, 2)}
+
+CRITICAL DOMAIN-SPECIFIC RULES:
+1. DOMAIN ACCURACY & TOOL RELEVANCE:
+   - Carefully analyze the exact domain of the user goal (e.g. Trading EA / MQL4 / PineScript, Web Development, Audio Production, Video Editing, Writing, Marketing).
+   - Incorporate the user's specific answers from ${userSpecsText} into the workflow and prompts.
+   - NEVER introduce irrelevant tools! For example, NEVER recommend Midjourney, Canva, or image generation tools for coding, trading bot (EA), API, or software tasks unless the user explicitly requested graphic design.
+   - For trading EAs, coding, or scripting, use developer AI tools like ChatGPT, Claude, Antigravity AI, or Cursor.
+
+2. SINGLE-TOOL WORKFLOW PREFERENCE:
+   - If a simple or technical task can be executed end-to-end using a SINGLE primary tool (e.g., ChatGPT or Claude for a 3-step trading EA development path: 1. Strategy Rules -> 2. MQL4 Code Generation -> 3. Backtesting Guide), USE THAT SINGLE TOOL FOR ALL STEPS!
+   - Do NOT force multiple different tools unless the workflow naturally requires distinct specialized engines (e.g., Scriptwriting in ChatGPT + Voiceover in ElevenLabs + Video in Kling AI).
+
+3. HIGH-VALUE DOMAIN PROMPTS & VARIABLES:
+   - Write realistic, production-ready prompts tailored specifically to the user's domain and specs.
+   - Include realistic variable placeholders in curly braces like {trading_pair}, {timeframe}, {risk_percent}, {indicator_period}, {app_name}, {target_audience}.
+
+Return ONLY a valid JSON object matching this exact TypeScript structure without any markdown formatting or extra text:
+{
+  "id": "wf-gemini-${Date.now()}",
+  "goal": "${goal}",
+  "category": "Domain Category (e.g. Algorithmic Trading, Web App, Video)",
+  "summary": "Clear executive summary of the workflow path based on user selections",
+  "difficulty": "Beginner / Intermediate / Advanced",
+  "totalTime": "30-45 minutes",
+  "triageAssumptions": [
+    {
+      "id": "platform",
+      "category": "Target Platform",
+      "label": "Platform / Language",
+      "currentValue": "User selected option",
+      "options": ["Option 1", "Option 2"]
+    }
+  ],
+  "steps": [
+    {
+      "stepNumber": 1,
+      "title": "Step Title relevant to domain",
+      "description": "Step Description",
+      "category": "Category Name",
+      "primaryTool": {
+        "id": "chatgpt",
+        "name": "ChatGPT (GPT-4o)",
+        "category": "Content",
+        "description": "Description",
+        "pricingModel": "Freemium",
+        "pricingDetails": "Free tier available",
+        "skillLevel": "Beginner",
+        "websiteUrl": "https://chatgpt.com",
+        "whyRecommended": "Why this specific tool for this domain step",
+        "rating": 4.9,
+        "logoText": "GPT",
+        "keyFeatures": ["Code Generation", "Custom Instructions"]
+      },
+      "prompt": {
+        "id": "p-1",
+        "title": "Domain-Specific Prompt Title",
+        "targetTool": "ChatGPT / Claude",
+        "stepNumber": 1,
+        "rawTemplate": "High quality prompt with {variables} specific to the task domain...",
+        "variables": [
+          {
+            "key": "trading_pair",
+            "label": "Trading Pair",
+            "defaultValue": "EUR/USD",
+            "placeholder": "e.g. EUR/USD"
+          }
+        ],
+        "explanation": "Why this prompt structure produces accurate code/results for this domain",
+        "bestPractices": ["Domain tip 1", "Domain tip 2"]
+      },
+      "estimatedTime": "10 mins",
+      "proTip": "Domain specific pro tip"
+    }
+  ]
+}`;
+
+  const { data } = await fetchGeminiApi(apiKey, model, {
+    contents: [{ parts: [{ text: systemPrompt }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 3000,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!rawText) {
+    throw new Error('Gemini API returned an empty output.');
+  }
+
+  const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+  const parsed = JSON.parse(cleanedText) as WorkflowResult;
+  return parsed;
+}
+
+/**
+ * Perform real AI analytics & tool evaluation on any search query using Gemini API.
+ */
+export async function analyzeToolsWithGemini(query: string): Promise<string> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) return '';
+
+  const model = getGeminiModel();
+  const prompt = `Perform instant AI analytics on the following AI tools / query: "${query}".
+Provide a concise 3-bullet evaluation covering:
+1. Best modern AI tools available for this specific task (including niche or emerging tools).
+2. Key technical setup or prompt strategy required.
+3. Primary efficiency gain vs manual creation.`;
+
+  try {
+    const { data } = await fetchGeminiApi(apiKey, model, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+    });
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } catch (e) {
+    return '';
+  }
+}
