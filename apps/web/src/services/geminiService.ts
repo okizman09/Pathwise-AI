@@ -423,81 +423,74 @@ export async function generateWorkflowWithGemini(
   const systemPrompt = `You are Pathwise AI — an intelligent, domain-expert AI workflow architect.
 
 User Goal: "${goal}"
-User Specified Answers to Follow-Up Questions: ${userSpecsText}
+User Specified Answers / Preferences: ${userSpecsText}
 
 Available Tools Index:
 ${JSON.stringify(toolsSummary)}
 
-CRITICAL DOMAIN-SPECIFIC RULES:
-1. DOMAIN ACCURACY & TOOL RELEVANCE:
-   - Carefully analyze the exact domain of the user goal (e.g. Trading EA / MQL4 / PineScript, Web Development, Audio Production, Video Editing, Writing, Marketing).
-   - Incorporate the user's specific answers from ${userSpecsText} into the workflow and prompts.
-   - NEVER introduce irrelevant tools! For example, NEVER recommend Midjourney or Canva for coding or trading bot (EA) tasks.
-   - For trading EAs, coding, or scripting, use developer AI tools like ChatGPT, Claude, Antigravity AI, or Cursor.
+CRITICAL WORKFLOW & TOOL RULES:
+1. SPECIALIZED MULTI-TOOL PIPELINES:
+   - Do NOT recommend the exact same tool (e.g. ChatGPT) for all 3 steps!
+   - Each step of the workflow MUST recommend the most specialized tool for that specific phase:
+     * Phase 1 (Scripting / Specs / Copywriting): Use ChatGPT ('chatgpt') or Claude ('claude').
+     * Phase 2 (Creation / Rendering / Coding / B-Roll): Use specialized engines like Kling AI ('kling'), Runway Gen-3 ('runway'), v0 ('v0'), Bolt ('bolt'), Antigravity AI ('antigravity'), or Midjourney ('midjourney').
+     * Phase 3 (Audio / Deployment / Optimization): Use specialized tools like ElevenLabs ('elevenlabs'), Udio ('udio'), Framer ('framer'), or Phind ('phind').
 
-2. SINGLE-TOOL WORKFLOW PREFERENCE:
-   - If a technical task can be executed end-to-end using a SINGLE primary tool (e.g., ChatGPT or Claude for a 3-step trading EA development path), USE THAT SINGLE TOOL FOR ALL STEPS!
+2. MATCH AVAILABLE TOOL IDs:
+   - Always reference the exact 'id' from the Available Tools Index (e.g. "chatgpt", "kling", "runway", "elevenlabs", "udio", "v0", "bolt", "antigravity", "claude", "framer").
 
-3. HIGH-VALUE DOMAIN PROMPTS & VARIABLES:
-   - Write realistic, production-ready prompts tailored specifically to the user's domain and specs with curly brace placeholders like {trading_pair}, {timeframe}, {risk_percent}.
+3. DYNAMIC PROMPTS & VARIABLE PLACEHOLDERS:
+   - Write realistic, production-ready prompts tailored specifically to "${goal}" and ${userSpecsText}.
+   - Include 2-4 editable variables with curly braces like {script_topic}, {video_style}, {brand_name}, {target_audience}.
 
 Return ONLY a valid JSON object matching this exact TypeScript structure without any markdown formatting or extra text:
 {
   "id": "wf-gemini-${Date.now()}",
   "goal": "${goal}",
-  "category": "Domain Category (e.g. Algorithmic Trading, Web App, Video)",
-  "summary": "Clear executive summary of the workflow path based on user selections",
+  "category": "Domain Category (e.g. Video Production, Web App, Music)",
+  "summary": "Clear 1-2 sentence executive summary of the specialized multi-tool pipeline.",
   "difficulty": "Beginner / Intermediate / Advanced",
   "totalTime": "30-45 minutes",
   "triageAssumptions": [
     {
-      "id": "platform",
-      "category": "Target Platform",
-      "label": "Platform / Language",
-      "currentValue": "User selected option",
+      "id": "format",
+      "category": "Format",
+      "label": "Selected Format",
+      "currentValue": "User choice",
       "options": ["Option 1", "Option 2"]
     }
   ],
   "steps": [
     {
       "stepNumber": 1,
-      "title": "Step Title relevant to domain",
-      "description": "Step Description",
-      "category": "Category Name",
+      "title": "Step 1 Title (e.g. Write Script & Storyboard)",
+      "description": "Clear step description.",
+      "category": "Scriptwriting & Specs",
       "primaryTool": {
         "id": "chatgpt",
         "name": "ChatGPT (GPT-4o)",
         "category": "Content",
-        "description": "Description",
-        "bestApplication": "Best use case",
-        "pricingModel": "Freemium",
-        "pricingDetails": "Free tier available",
-        "skillLevel": "Beginner",
-        "websiteUrl": "https://chatgpt.com",
-        "whyRecommended": "Why this specific tool for this domain step",
-        "rating": 4.9,
-        "logoText": "GPT",
-        "keyFeatures": ["Code Generation", "Custom Instructions"]
+        "whyRecommended": "Why this specific tool for this phase."
       },
       "prompt": {
         "id": "p-1",
-        "title": "Domain-Specific Prompt Title",
-        "targetTool": "ChatGPT / Claude",
+        "title": "Production Prompt Title",
+        "targetTool": "ChatGPT (GPT-4o)",
         "stepNumber": 1,
-        "rawTemplate": "High quality prompt with {variables} specific to the task domain...",
+        "rawTemplate": "High quality prompt with {variables}...",
         "variables": [
           {
-            "key": "trading_pair",
-            "label": "Trading Pair",
-            "defaultValue": "EUR/USD",
-            "placeholder": "e.g. EUR/USD"
+            "key": "script_topic",
+            "label": "Topic",
+            "defaultValue": "${goal}",
+            "placeholder": "Describe topic"
           }
         ],
-        "explanation": "Why this prompt structure produces accurate code/results for this domain",
-        "bestPractices": ["Domain tip 1", "Domain tip 2"]
+        "explanation": "Why this prompt structure works.",
+        "bestPractices": ["Tip 1", "Tip 2"]
       },
       "estimatedTime": "10 mins",
-      "proTip": "Domain specific pro tip"
+      "proTip": "Actionable pro tip for Step 1."
     }
   ]
 }`;
@@ -519,6 +512,51 @@ Return ONLY a valid JSON object matching this exact TypeScript structure without
 
   const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
   const parsed = JSON.parse(cleanedText) as WorkflowResult;
+
+  // Hydrate tools against CURATED_TOOLS for full metadata & alternative tools
+  if (parsed && Array.isArray(parsed.steps)) {
+    parsed.steps = parsed.steps.map(step => {
+      const toolId = step.primaryTool?.id?.toLowerCase() || '';
+      const toolName = step.primaryTool?.name?.toLowerCase() || '';
+
+      // Match against CURATED_TOOLS
+      let curatedMatch = CURATED_TOOLS.find(t => t.id.toLowerCase() === toolId || t.name.toLowerCase().includes(toolId));
+      if (!curatedMatch && toolName) {
+        curatedMatch = CURATED_TOOLS.find(t => t.name.toLowerCase().includes(toolName));
+      }
+
+      const hydratedPrimary: Tool = curatedMatch
+        ? {
+            ...curatedMatch,
+            whyRecommended: step.primaryTool?.whyRecommended || curatedMatch.whyRecommended
+          }
+        : {
+            id: step.primaryTool?.id || 'tool-gen',
+            name: step.primaryTool?.name || 'AI Tool',
+            category: (step.category || 'Content') as Tool['category'],
+            description: step.primaryTool?.description || 'Specialized AI tool for this workflow step.',
+            bestApplication: step.primaryTool?.bestApplication || 'Executing step tasks efficiently.',
+            pricingModel: 'Freemium',
+            pricingDetails: 'Free tier available',
+            skillLevel: 'Beginner',
+            websiteUrl: 'https://google.com/search?q=' + encodeURIComponent(step.primaryTool?.name || 'AI Tool'),
+            whyRecommended: step.primaryTool?.whyRecommended || 'Recommended for optimal results.',
+            rating: 4.8,
+            logoText: (step.primaryTool?.name || 'AI').substring(0, 2).toUpperCase(),
+            keyFeatures: ['AI Generation', 'Prompt Integration']
+          };
+
+      // Find alternative tools in the same or related category
+      const alternatives = CURATED_TOOLS.filter(t => t.id !== hydratedPrimary.id && (t.category === hydratedPrimary.category || t.category === step.category)).slice(0, 1);
+
+      return {
+        ...step,
+        primaryTool: hydratedPrimary,
+        alternativeTools: alternatives.length > 0 ? alternatives : step.alternativeTools
+      };
+    });
+  }
+
   return parsed;
 }
 
