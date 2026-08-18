@@ -699,18 +699,8 @@ export function generateWorkflowFromGoal(userGoal: string, explicitAssumptions?:
   const goalLower = userGoal.toLowerCase();
   
   // 1. Trading EAs / Bots / Financial Algorithms (Forex, Crypto, Stock, MetaTrader, PineScript)
-  if (
-    goalLower.includes('trading') ||
-    goalLower.includes('ea') ||
-    goalLower.includes('expert advisor') ||
-    goalLower.includes('forex') ||
-    goalLower.includes('bot') ||
-    goalLower.includes('mql4') ||
-    goalLower.includes('mql5') ||
-    goalLower.includes('pinescript') ||
-    goalLower.includes('metatrader') ||
-    goalLower.includes('crypto bot')
-  ) {
+  const isTrading = /\b(trading|ea|expert advisor|forex|mql|mql4|mql5|pinescript|metatrader|crypto bot)\b/i.test(goalLower);
+  if (isTrading) {
     return {
       id: 'wf-ea-' + Date.now(),
       goal: userGoal,
@@ -859,7 +849,112 @@ Act as a quantitative risk analyst. Evaluate these metrics:
     };
   }
 
-  // 2. General Coding & Software Tasks (Scripts, Python, API, Backend)
+  // 2. Video & YouTube Creation Tasks (Shorts, Video, Reels, Animations)
+  const isVideo = /\b(video|youtube|short|shorts|reel|tiktok|movie|film|animation)\b/i.test(goalLower);
+  if (isVideo) {
+    return {
+      id: 'wf-video-' + Date.now(),
+      goal: userGoal,
+      category: 'Video Production & Storytelling',
+      summary: 'A 3-step specialized video creation pipeline: craft engaging viral scripts in ChatGPT, render high-fidelity AI B-roll clips in Kling AI / Runway Gen-3, and mix cinematic voiceover and background score in ElevenLabs & Udio.',
+      difficulty: 'Beginner',
+      totalTime: '30–45 minutes',
+      triageAssumptions: [
+        {
+          id: 'video_style',
+          category: 'Format',
+          label: 'Video Format',
+          currentValue: explicitAssumptions?.video_style || 'Faceless YouTube Short / Video',
+          options: ['Faceless YouTube Short / Video', 'Cinematic Commercial', 'AI Talking Avatar', 'Explainer Animation']
+        },
+        {
+          id: 'video_tools',
+          category: 'Visual Tool',
+          label: 'Primary Video AI Engine',
+          currentValue: explicitAssumptions?.video_tools || 'Kling AI & Runway Gen-3',
+          options: ['Kling AI & Runway Gen-3', 'Luma Dream Machine & Pika', 'HeyGen Avatar']
+        }
+      ],
+      steps: [
+        {
+          stepNumber: 1,
+          title: 'Write High-Hook Script & Visual Storyboard',
+          description: 'Use ChatGPT (GPT-4o) or Claude 3.5 Sonnet to write a viral video script with scene-by-scene visual descriptions.',
+          category: 'Scriptwriting & Storyboard',
+          primaryTool: CURATED_TOOLS[6], // ChatGPT
+          alternativeTools: [CURATED_TOOLS[7]], // Claude
+          estimatedTime: '10 mins',
+          proTip: 'Ask for specific camera angle notes (e.g. drone sweep, macro close-up) for each 5-second scene.',
+          prompt: {
+            id: 'p-vid-1',
+            title: 'Viral YouTube Video Script & Storyboard Prompt',
+            targetTool: 'ChatGPT (GPT-4o)',
+            stepNumber: 1,
+            rawTemplate: `Act as a viral YouTube producer and scriptwriter. Write a full script for a video titled "{video_title}".
+
+Structure:
+1. Hook (First 5 seconds): Attention-grabbing opening statement
+2. Core Narrative (3 key plot points / facts)
+3. Call to Action (Engaging conclusion)
+
+Include a 2-column table with:
+- Spoken Audio Transcript
+- Visual B-Roll Prompt (optimized for AI video generators like Kling AI or Runway)`,
+            variables: [
+              { key: 'video_title', label: 'Video Title/Topic', defaultValue: userGoal, placeholder: 'Describe video title' }
+            ],
+            explanation: 'Structuring visual prompts side-by-side with narration text makes rendering AI video clips effortless.',
+            bestPractices: ['Hook viewers in the first 3 seconds with a curious question or bold claim.']
+          }
+        },
+        {
+          stepNumber: 2,
+          title: 'Generate Cinematic AI B-Roll Video Clips',
+          description: 'Render high-resolution 1080p video clips for each storyboard scene using Kling AI or Runway Gen-3.',
+          category: 'AI Video Generation',
+          primaryTool: CURATED_TOOLS[4], // Kling AI
+          alternativeTools: [CURATED_TOOLS[18]], // Runway Gen-3
+          estimatedTime: '20 mins',
+          proTip: 'Use motion brush and camera pan controls for dramatic cinematic movement.',
+          prompt: {
+            id: 'p-vid-2',
+            title: 'Kling AI / Runway Cinematic B-Roll Prompt',
+            targetTool: 'Kling AI / Runway Gen-3',
+            stepNumber: 2,
+            rawTemplate: `Cinematic slow-motion shot of {scene_description}, 4k resolution, dramatic volumetric lighting, photorealistic detail, 60fps --motion 5`,
+            variables: [
+              { key: 'scene_description', label: 'Scene Concept', defaultValue: 'a futuristic glowing city skyline at dusk', placeholder: 'Describe visual scene' }
+            ],
+            explanation: 'Adding volumetric lighting and motion parameters yields studio-grade video clips.',
+            bestPractices: ['Keep individual clip lengths to 5-10 seconds for energetic pacing.']
+          }
+        },
+        {
+          stepNumber: 3,
+          title: 'Generate AI Voiceover & Background Music Score',
+          description: 'Create lifelike voiceover narration using ElevenLabs and blend custom royalty-free background score using Udio or Suno.',
+          category: 'Audio Production & Mixing',
+          primaryTool: CURATED_TOOLS[9], // ElevenLabs
+          alternativeTools: [CURATED_TOOLS[5]], // Udio
+          estimatedTime: '15 mins',
+          proTip: 'Adjust ElevenLabs voice stability to 40% for natural human emotion.',
+          prompt: {
+            id: 'p-vid-3',
+            title: 'ElevenLabs Voiceover & Audio Score Prompt',
+            targetTool: 'ElevenLabs / Udio',
+            stepNumber: 3,
+            rawTemplate: `Generate a captivating, warm storytelling voiceover for the script generated in Step 1.
+For background audio: Create an ambient cinematic orchestral track with subtle synth pads using Udio.`,
+            variables: [],
+            explanation: 'Combining emotional voiceovers with custom AI background music elevates video production value.',
+            bestPractices: ['Keep background music volume 12dB lower than narration speech.']
+          }
+        }
+      ]
+    };
+  }
+
+  // 3. General Coding & Software Tasks (Scripts, Python, API, Backend)
   if (
     goalLower.includes('code') ||
     goalLower.includes('script') ||
