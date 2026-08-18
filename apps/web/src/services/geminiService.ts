@@ -246,17 +246,26 @@ export async function generateQuestionnaireWithGemini(goal: string): Promise<Que
   }
 
   const model = getGeminiModel();
-  const prompt = `You are Pathwise AI — an intelligent creation assistant. The user wants to create: "${goal}".
-Analyze the EXACT domain of "${goal}" (e.g. Video Production, Software Coding, YouTube, Music, Algorithmic Trading, Graphic Design, Copywriting).
-Generate 2-3 interactive, domain-specific multiple-choice follow-up questions to understand their technical specifications, preferred tools, target platform, or budget BEFORE generating a workflow.
+  const prompt = `You are Pathwise AI — an intelligent creation assistant designed for creators, beginners, and professionals.
+The user wants to create: "${goal}".
+
+Generate 2-3 simple, user-friendly multiple-choice follow-up questions to understand their target platform, visual/content style, format, or budget BEFORE generating a workflow.
+
+CRITICAL NON-TECHNICAL RULES:
+1. NEVER ask the user to choose or select specific AI tool names (e.g. DO NOT ask "Do you prefer Runway, Kling AI, or Pika?"). The user does NOT know AI tool names yet — that is Pathwise AI's job to recommend!
+2. Focus questions purely on user outcomes and preferences:
+   - Target Platform / Publishing Format (e.g., Short-form YouTube Shorts/TikTok vs Long-form YouTube vs Website)
+   - Visual & Aesthetic Preference (e.g., Photorealistic AI B-Roll, Animated Illustration, Faceless Captions, Clean UI Dashboard)
+   - Audio & Narration Style (e.g., Natural AI Voiceover + Background Score, Personal Voice Recording, Text & Captions Only)
+   - Budget Preference (e.g., 100% Free & Freemium Tools, Professional Quality AI Tools)
 
 Return ONLY a valid JSON array of objects with this structure without any markdown:
 [
   {
-    "id": "spec_1",
-    "question": "Domain-specific question relevant to ${goal}?",
-    "options": ["Option A", "Option B", "Option C", "Option D"],
-    "defaultOption": "Option A"
+    "id": "format",
+    "question": "Where will you publish or use this content?",
+    "options": ["YouTube Shorts / TikTok (Short-form)", "YouTube Channel (Long-form)", "Social Media & Website"],
+    "defaultOption": "YouTube Shorts / TikTok (Short-form)"
   }
 ]`;
 
@@ -289,26 +298,26 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
   const g = goal.toLowerCase();
   
   // 1. Trading / Forex / EA (Use regex word boundaries so "create" doesn't match "ea"!)
-  const isTrading = /\b(trading|ea|expert advisor|forex|mql|mql4|mql5|pinescript|metatrader)\b/i.test(g);
+  const isTrading = /\b(trading|ea|expert advisor|forex|mql|mql4|mql5|pinescript|metatrader|crypto bot)\b/i.test(g);
   if (isTrading) {
     return [
       {
         id: 'platform',
-        question: 'Which trading platform and programming language do you plan to use?',
-        options: ['MetaTrader 4 (MQL4)', 'MetaTrader 5 (MQL5)', 'TradingView (PineScript)', 'Python Trading Bot'],
-        defaultOption: 'MetaTrader 4 (MQL4)'
+        question: 'Which platform will your trading strategy execute on?',
+        options: ['MetaTrader 4 / MetaTrader 5', 'TradingView Charts', 'Custom Python / Exchange API'],
+        defaultOption: 'MetaTrader 4 / MetaTrader 5'
       },
       {
         id: 'strategy',
-        question: 'What core indicator & entry strategy will your EA execute?',
-        options: ['Moving Average Crossover + RSI', 'Grid / Martingale Execution', 'Breakout & Volatility', 'Price Action & Support/Resistance'],
-        defaultOption: 'Moving Average Crossover + RSI'
+        question: 'What type of trading strategy do you want to automate?',
+        options: ['Indicator Crossover (e.g. Moving Average + RSI)', 'Grid & Trend Following', 'Breakout & Volatility'],
+        defaultOption: 'Indicator Crossover (e.g. Moving Average + RSI)'
       },
       {
         id: 'risk',
-        question: 'How should the EA manage risk & order sizing?',
-        options: ['Dynamic Account Risk % per trade', 'Fixed Lot Size (e.g. 0.10)', 'Trailing Stop & Break-even'],
-        defaultOption: 'Dynamic Account Risk % per trade'
+        question: 'How should account risk be managed per trade?',
+        options: ['Fixed Account Risk % (e.g. 1-2%)', 'Fixed Position Sizing', 'Trailing Stop & Break-even'],
+        defaultOption: 'Fixed Account Risk % (e.g. 1-2%)'
       }
     ];
   }
@@ -319,21 +328,21 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     return [
       {
         id: 'video_style',
-        question: 'What format of video content are you creating?',
-        options: ['Faceless YouTube Video / Short', 'Cinematic B-Roll & Commercial', 'AI Talking Head / Avatar', 'Animated Explainer'],
-        defaultOption: 'Faceless YouTube Video / Short'
+        question: 'What video format and platform are you creating for?',
+        options: ['Faceless Short (YouTube Shorts / TikTok / Reels)', 'Full Long-form YouTube Video', 'Cinematic Commercial', 'Animated Explainer'],
+        defaultOption: 'Faceless Short (YouTube Shorts / TikTok / Reels)'
       },
       {
-        id: 'video_tools',
-        question: 'Which primary AI video creation tools do you prefer?',
-        options: ['Kling AI & Runway Gen-3', 'Luma Dream Machine & Pika', 'HeyGen (Avatar) & ElevenLabs', 'CapCut & ChatGPT Scripting'],
-        defaultOption: 'Kling AI & Runway Gen-3'
+        id: 'visual_aesthetic',
+        question: 'What visual aesthetic do you want for your video scenes?',
+        options: ['Photorealistic & Cinematic B-Roll', '3D Animated Style', 'Faceless Captions & Stock Visuals'],
+        defaultOption: 'Photorealistic & Cinematic B-Roll'
       },
       {
         id: 'audio_narration',
-        question: 'How will you handle voiceover and audio music?',
-        options: ['ElevenLabs AI Voiceover + Udio Music', 'My Own Voice Recording', 'Royalty-Free Audio Track'],
-        defaultOption: 'ElevenLabs AI Voiceover + Udio Music'
+        question: 'How would you like the voiceover and audio music handled?',
+        options: ['Professional AI Voiceover + Custom Background Score', 'Record My Own Voice', 'Background Music & Text Captions Only'],
+        defaultOption: 'Professional AI Voiceover + Custom Background Score'
       }
     ];
   }
@@ -344,15 +353,15 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     return [
       {
         id: 'type',
-        question: 'What style of software project are you building?',
-        options: ['Fullstack Web App / React', 'Backend API / Python Script', 'Automation Bot / Pipeline'],
-        defaultOption: 'Fullstack Web App / React'
+        question: 'What type of software project are you building?',
+        options: ['Fullstack Web Application', 'Automation Script / Data Pipeline', 'Backend API Service'],
+        defaultOption: 'Fullstack Web Application'
       },
       {
-        id: 'tool_choice',
-        question: 'Which AI development tool or environment do you prefer?',
-        options: ['ChatGPT (GPT-4o)', 'Claude 3.5 Sonnet', 'Antigravity AI (Google)', 'v0 / Bolt.new (No Code)'],
-        defaultOption: 'ChatGPT (GPT-4o)'
+        id: 'experience_level',
+        question: 'What is your coding experience level?',
+        options: ['No Code / Beginner (Prompt-to-Build)', 'Developer (In-IDE AI Pair Programming)'],
+        defaultOption: 'No Code / Beginner (Prompt-to-Build)'
       }
     ];
   }
@@ -363,9 +372,9 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     return [
       {
         id: 'audio_genre',
-        question: 'What audio format or music genre are you aiming for?',
-        options: ['Radio Song with Vocals (Udio/Suno)', 'Lofi Chill / Instrumental Track', 'AI Voiceover & Podcast Intro'],
-        defaultOption: 'Radio Song with Vocals (Udio/Suno)'
+        question: 'What type of audio output do you want to create?',
+        options: ['Full Song with Vocal Tracks & Lyrics', 'Lofi / Instrumental Background Track', 'AI Voiceover & Podcast Intro'],
+        defaultOption: 'Full Song with Vocal Tracks & Lyrics'
       }
     ];
   }
@@ -374,14 +383,14 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
   return [
     {
       id: 'output_type',
-      question: 'What is your primary target deliverable format?',
+      question: 'What is your primary goal deliverable format?',
       options: ['Digital Guide / Content', 'Interactive Web Project', 'Social Media Campaign'],
       defaultOption: 'Digital Guide / Content'
     },
     {
       id: 'budget_tier',
       question: 'What is your preferred AI tool budget tier?',
-      options: ['Free & Freemium Tools Only', 'Pro Paid AI Suite'],
+      options: ['Free & Freemium Tools Only', 'Professional Paid AI Suite'],
       defaultOption: 'Free & Freemium Tools Only'
     }
   ];
