@@ -247,15 +247,16 @@ export async function generateQuestionnaireWithGemini(goal: string): Promise<Que
 
   const model = getGeminiModel();
   const prompt = `You are Pathwise AI — an intelligent creation assistant. The user wants to create: "${goal}".
+Analyze the EXACT domain of "${goal}" (e.g. Video Production, Software Coding, YouTube, Music, Algorithmic Trading, Graphic Design, Copywriting).
 Generate 2-3 interactive, domain-specific multiple-choice follow-up questions to understand their technical specifications, preferred tools, target platform, or budget BEFORE generating a workflow.
 
 Return ONLY a valid JSON array of objects with this structure without any markdown:
 [
   {
-    "id": "platform",
-    "question": "Which trading platform and language do you plan to use?",
-    "options": ["MetaTrader 4 (MQL4)", "MetaTrader 5 (MQL5)", "TradingView (PineScript)", "Python Bot"],
-    "defaultOption": "MetaTrader 4 (MQL4)"
+    "id": "spec_1",
+    "question": "Domain-specific question relevant to ${goal}?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "defaultOption": "Option A"
   }
 ]`;
 
@@ -263,7 +264,7 @@ Return ONLY a valid JSON array of objects with this structure without any markdo
     const { data } = await fetchGeminiApi(apiKey, model, {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.3,
+        temperature: 0.2,
         maxOutputTokens: 1000,
         responseMimeType: 'application/json'
       }
@@ -287,15 +288,9 @@ Return ONLY a valid JSON array of objects with this structure without any markdo
 export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
   const g = goal.toLowerCase();
   
-  if (
-    g.includes('trading') ||
-    g.includes('ea') ||
-    g.includes('expert advisor') ||
-    g.includes('forex') ||
-    g.includes('bot') ||
-    g.includes('mql') ||
-    g.includes('pinescript')
-  ) {
+  // 1. Trading / Forex / EA (Use regex word boundaries so "create" doesn't match "ea"!)
+  const isTrading = /\b(trading|ea|expert advisor|forex|mql|mql4|mql5|pinescript|metatrader)\b/i.test(g);
+  if (isTrading) {
     return [
       {
         id: 'platform',
@@ -318,7 +313,34 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
-  if (g.includes('code') || g.includes('script') || g.includes('app') || g.includes('python') || g.includes('web')) {
+  // 2. Video / YouTube / Shorts / Reel
+  const isVideo = /\b(video|youtube|short|shorts|reel|tiktok|movie|film|animation)\b/i.test(g);
+  if (isVideo) {
+    return [
+      {
+        id: 'video_style',
+        question: 'What format of video content are you creating?',
+        options: ['Faceless YouTube Video / Short', 'Cinematic B-Roll & Commercial', 'AI Talking Head / Avatar', 'Animated Explainer'],
+        defaultOption: 'Faceless YouTube Video / Short'
+      },
+      {
+        id: 'video_tools',
+        question: 'Which primary AI video creation tools do you prefer?',
+        options: ['Kling AI & Runway Gen-3', 'Luma Dream Machine & Pika', 'HeyGen (Avatar) & ElevenLabs', 'CapCut & ChatGPT Scripting'],
+        defaultOption: 'Kling AI & Runway Gen-3'
+      },
+      {
+        id: 'audio_narration',
+        question: 'How will you handle voiceover and audio music?',
+        options: ['ElevenLabs AI Voiceover + Udio Music', 'My Own Voice Recording', 'Royalty-Free Audio Track'],
+        defaultOption: 'ElevenLabs AI Voiceover + Udio Music'
+      }
+    ];
+  }
+
+  // 3. Coding / Web / App / Script
+  const isCoding = /\b(code|coding|script|app|web|python|react|fullstack|api|developer)\b/i.test(g);
+  if (isCoding) {
     return [
       {
         id: 'type',
@@ -335,6 +357,20 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
+  // 4. Music / Audio / Song
+  const isAudio = /\b(song|music|audio|podcast|track|beat|lofi|voiceover)\b/i.test(g);
+  if (isAudio) {
+    return [
+      {
+        id: 'audio_genre',
+        question: 'What audio format or music genre are you aiming for?',
+        options: ['Radio Song with Vocals (Udio/Suno)', 'Lofi Chill / Instrumental Track', 'AI Voiceover & Podcast Intro'],
+        defaultOption: 'Radio Song with Vocals (Udio/Suno)'
+      }
+    ];
+  }
+
+  // 5. General Fallback
   return [
     {
       id: 'output_type',
@@ -485,18 +521,32 @@ export async function analyzeToolsWithGemini(query: string): Promise<string> {
   if (!apiKey) return '';
 
   const model = getGeminiModel();
-  const prompt = `Perform instant AI analytics on the following AI tools / query: "${query}".
-Provide a concise 3-bullet evaluation covering:
-1. Best modern AI tools available for this specific task (including niche or emerging tools).
-2. Key technical setup or prompt strategy required.
-3. Primary efficiency gain vs manual creation.`;
+  const prompt = `You are a concise AI analytics engine. Perform instant AI analytics on: "${query}".
+Do NOT include any scratchpad, setup notes, or chain-of-thought commentary.
+Provide ONLY 3 direct bullet points covering:
+• Top modern & emerging AI tools for this specific task
+• Key technical setup or prompt strategy
+• Estimated speed & efficiency gain over manual creation`;
 
   try {
     const { data } = await fetchGeminiApi(apiKey, model, {
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 500 }
+      generationConfig: { temperature: 0.3, maxOutputTokens: 500 }
     });
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    let raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    
+    // Strip out scratchpad notes if model hallucinated reasoning steps
+    if (raw.includes('Bullet 1') || raw.includes('What is')) {
+      const bulletIndex = raw.indexOf('•');
+      if (bulletIndex !== -1) {
+        raw = raw.substring(bulletIndex);
+      } else {
+        const starIndex = raw.indexOf('*');
+        if (starIndex !== -1) raw = raw.substring(starIndex);
+      }
+    }
+
+    return raw.trim();
   } catch (e) {
     return '';
   }
