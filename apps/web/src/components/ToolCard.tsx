@@ -95,11 +95,24 @@ export const ToolCard: React.FC<ToolCardProps> = ({ tool, isPrimary = true }) =>
         {tool.description}
       </p>
 
+      {/* Best Application Box */}
+      {tool.bestApplication && (
+        <div className="p-2.5 sm:p-3 rounded-xl bg-purple-950/30 border border-purple-500/20 mb-3">
+          <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-purple-300 mb-1">
+            <Zap className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+            <span>Best Application:</span>
+          </div>
+          <p className="text-xs text-purple-100 font-medium break-words">
+            {tool.bestApplication}
+          </p>
+        </div>
+      )}
+
       {/* Why Recommended Explanation */}
       <div className="p-2.5 sm:p-3 rounded-xl bg-slate-950/90 border border-slate-800 mb-3">
         <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-cyan-400 mb-1">
-          <Zap className="w-3.5 h-3.5 shrink-0" />
-          <span>Why this tool for this step:</span>
+          <CheckCircle2 className="w-3 h-3.5 text-cyan-400 shrink-0" />
+          <span>Why this tool:</span>
         </div>
         <p className="text-xs text-slate-300 italic break-words">
           "{tool.whyRecommended}"

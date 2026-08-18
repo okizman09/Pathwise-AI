@@ -4,8 +4,9 @@ export type SkillLevel = 'Beginner' | 'Intermediate' | 'Advanced';
 export interface Tool {
   id: string;
   name: string;
-  category: 'Website' | 'Video' | 'Audio' | 'Content' | 'Design' | 'Coding' | 'General';
+  category: 'Website' | 'Video' | 'Audio' | 'Content' | 'Design' | 'Coding' | 'Trading & Automation' | 'Research & Data' | 'General';
   description: string;
+  bestApplication: string; // High-value primary use case
   pricingModel: PricingModel;
   pricingDetails: string;
   skillLevel: SkillLevel;
@@ -16,6 +17,8 @@ export interface Tool {
   logoText: string;
   badge?: string;
   keyFeatures: string[];
+  starterPrompt?: string; // Quick playbook starter prompt
+  isDiscovered?: boolean; // Flag for live web scraped tools
 }
 
 export interface PromptVariable {

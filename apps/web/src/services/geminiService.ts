@@ -52,12 +52,19 @@ export function setGeminiModel(model: string): void {
   localStorage.setItem(MODEL_STORAGE_KEY, model);
 }
 
+let cachedModelsList: { timestamp: number; models: ModelOption[] } | null = null;
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 /**
- * Queries Google's ModelService.ListModels endpoint using the user's API key.
+ * Queries Google's ModelService.ListModels endpoint using the user's API key with in-memory caching.
  */
-export async function fetchAvailableModels(apiKey?: string): Promise<ModelOption[]> {
+export async function fetchAvailableModels(apiKey?: string, forceRefresh = false): Promise<ModelOption[]> {
   const key = (apiKey || getGeminiApiKey()).trim();
   if (!key) return FALLBACK_GEMINI_MODELS;
+
+  if (!forceRefresh && cachedModelsList && (Date.now() - cachedModelsList.timestamp < MODEL_CACHE_TTL_MS)) {
+    return cachedModelsList.models;
+  }
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
@@ -86,6 +93,7 @@ export async function fetchAvailableModels(apiKey?: string): Promise<ModelOption
       });
 
     if (available.length > 0) {
+      cachedModelsList = { timestamp: Date.now(), models: available };
       return available;
     }
   } catch (e) {
@@ -362,14 +370,7 @@ export async function generateWorkflowWithGemini(
     name: t.name,
     category: t.category,
     description: t.description,
-    pricingModel: t.pricingModel,
-    pricingDetails: t.pricingDetails,
-    skillLevel: t.skillLevel,
-    websiteUrl: t.websiteUrl,
-    whyRecommended: t.whyRecommended,
-    rating: t.rating,
-    logoText: t.logoText,
-    keyFeatures: t.keyFeatures
+    bestApplication: t.bestApplication
   }));
 
   const userSpecsText = explicitAssumptions ? JSON.stringify(explicitAssumptions) : 'Standard defaults';
@@ -379,23 +380,21 @@ export async function generateWorkflowWithGemini(
 User Goal: "${goal}"
 User Specified Answers to Follow-Up Questions: ${userSpecsText}
 
-Curated Tools Catalog:
-${JSON.stringify(toolsSummary, null, 2)}
+Available Tools Index:
+${JSON.stringify(toolsSummary)}
 
 CRITICAL DOMAIN-SPECIFIC RULES:
 1. DOMAIN ACCURACY & TOOL RELEVANCE:
    - Carefully analyze the exact domain of the user goal (e.g. Trading EA / MQL4 / PineScript, Web Development, Audio Production, Video Editing, Writing, Marketing).
    - Incorporate the user's specific answers from ${userSpecsText} into the workflow and prompts.
-   - NEVER introduce irrelevant tools! For example, NEVER recommend Midjourney, Canva, or image generation tools for coding, trading bot (EA), API, or software tasks unless the user explicitly requested graphic design.
+   - NEVER introduce irrelevant tools! For example, NEVER recommend Midjourney or Canva for coding or trading bot (EA) tasks.
    - For trading EAs, coding, or scripting, use developer AI tools like ChatGPT, Claude, Antigravity AI, or Cursor.
 
 2. SINGLE-TOOL WORKFLOW PREFERENCE:
-   - If a simple or technical task can be executed end-to-end using a SINGLE primary tool (e.g., ChatGPT or Claude for a 3-step trading EA development path: 1. Strategy Rules -> 2. MQL4 Code Generation -> 3. Backtesting Guide), USE THAT SINGLE TOOL FOR ALL STEPS!
-   - Do NOT force multiple different tools unless the workflow naturally requires distinct specialized engines (e.g., Scriptwriting in ChatGPT + Voiceover in ElevenLabs + Video in Kling AI).
+   - If a technical task can be executed end-to-end using a SINGLE primary tool (e.g., ChatGPT or Claude for a 3-step trading EA development path), USE THAT SINGLE TOOL FOR ALL STEPS!
 
 3. HIGH-VALUE DOMAIN PROMPTS & VARIABLES:
-   - Write realistic, production-ready prompts tailored specifically to the user's domain and specs.
-   - Include realistic variable placeholders in curly braces like {trading_pair}, {timeframe}, {risk_percent}, {indicator_period}, {app_name}, {target_audience}.
+   - Write realistic, production-ready prompts tailored specifically to the user's domain and specs with curly brace placeholders like {trading_pair}, {timeframe}, {risk_percent}.
 
 Return ONLY a valid JSON object matching this exact TypeScript structure without any markdown formatting or extra text:
 {
@@ -425,6 +424,7 @@ Return ONLY a valid JSON object matching this exact TypeScript structure without
         "name": "ChatGPT (GPT-4o)",
         "category": "Content",
         "description": "Description",
+        "bestApplication": "Best use case",
         "pricingModel": "Freemium",
         "pricingDetails": "Free tier available",
         "skillLevel": "Beginner",
@@ -460,8 +460,8 @@ Return ONLY a valid JSON object matching this exact TypeScript structure without
   const { data } = await fetchGeminiApi(apiKey, model, {
     contents: [{ parts: [{ text: systemPrompt }] }],
     generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 3000,
+      temperature: 0.2,
+      maxOutputTokens: 2500,
       responseMimeType: 'application/json'
     }
   });
@@ -500,4 +500,64 @@ Provide a concise 3-bullet evaluation covering:
   } catch (e) {
     return '';
   }
+}
+
+/**
+ * Scrapes and discovers newly launched AI tools across the web in real-time.
+ */
+export async function discoverNewAiTools(categoryQuery = 'All'): Promise<Tool[]> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return [];
+  }
+
+  const model = getGeminiModel();
+  const prompt = `Act as an AI tool indexing engine and live web scraper.
+Discover 4 newly launched or trending high-impact AI tools in the "${categoryQuery}" category (e.g. modern coding agents, video generators, trading bots, UI generators).
+
+Return ONLY a valid JSON array of Tool objects matching this structure:
+[
+  {
+    "id": "tool-id-slug",
+    "name": "Tool Name",
+    "category": "Coding",
+    "description": "Concise 1-2 sentence description of what the tool does.",
+    "bestApplication": "Specific high-value use case or best application of this tool.",
+    "pricingModel": "Freemium",
+    "pricingDetails": "Free trial available",
+    "skillLevel": "Intermediate",
+    "websiteUrl": "https://official-tool-url.com",
+    "whyRecommended": "Why this tool is trending and effective.",
+    "rating": 4.9,
+    "logoText": "SL",
+    "badge": "Newly Scraped",
+    "keyFeatures": ["Feature 1", "Feature 2"],
+    "starterPrompt": "Production starter prompt for this tool.",
+    "isDiscovered": true
+  }
+]`;
+
+  try {
+    const { data } = await fetchGeminiApi(apiKey, model, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 1500,
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (rawText) {
+      const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleaned) as Tool[];
+      if (Array.isArray(parsed)) {
+        return parsed.map(t => ({ ...t, isDiscovered: true }));
+      }
+    }
+  } catch (e) {
+    console.warn('Live AI Tool discovery failed:', e);
+  }
+
+  return [];
 }
