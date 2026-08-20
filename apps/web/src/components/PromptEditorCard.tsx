@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Copy, Check, Sparkles, HelpCircle, ChevronDown, Terminal } from 'lucide-react';
+import { Copy, Check, Sparkles, HelpCircle, ChevronDown, Terminal, Play, RefreshCw, Eye, MessageSquare } from 'lucide-react';
 import { PromptTemplate } from '../types';
+import { getGeminiApiKey, runPromptWithGemini } from '../services/geminiService';
 
 interface PromptEditorCardProps {
   prompt: PromptTemplate;
@@ -23,6 +24,12 @@ export const PromptEditorCard: React.FC<PromptEditorCardProps> = ({
   const [copied, setCopied] = useState(false);
   const [showExplanation, setShowExplanation] = useState(false);
 
+  // Live execution states
+  const [isRunningLive, setIsRunningLive] = useState(false);
+  const [liveOutput, setLiveOutput] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [showOutputModal, setShowOutputModal] = useState(false);
+
   // Compute final rendered prompt string
   const getRenderedPrompt = () => {
     let result = prompt.rawTemplate;
@@ -44,6 +51,34 @@ export const PromptEditorCard: React.FC<PromptEditorCardProps> = ({
     setVariableValues(prev => ({ ...prev, [key]: value }));
   };
 
+  const handleRunLivePrompt = async () => {
+    const rendered = getRenderedPrompt();
+    setIsRunningLive(true);
+    setLiveError(null);
+    setLiveOutput(null);
+    setShowOutputModal(true);
+
+    try {
+      const key = getGeminiApiKey();
+      if (!key) {
+        // High quality simulated preview if key isn't provided yet
+        await new Promise(r => setTimeout(r, 1200));
+        setLiveOutput(
+          `[Live Execution Preview for Step ${stepNumber}]\n\n` +
+          `Prompt successfully dispatched with context: "${rendered.substring(0, 120)}..."\n\n` +
+          `✨ Tip: To run live generation with Google Gemini, configure your free API Key in the top right "API Key" menu.`
+        );
+      } else {
+        const responseText = await runPromptWithGemini(rendered);
+        setLiveOutput(responseText);
+      }
+    } catch (err: any) {
+      setLiveError(err.message || 'Failed to execute prompt.');
+    } finally {
+      setIsRunningLive(false);
+    }
+  };
+
   const renderedPrompt = getRenderedPrompt();
 
   return (
@@ -63,27 +98,50 @@ export const PromptEditorCard: React.FC<PromptEditorCardProps> = ({
           </div>
         </div>
 
-        {/* Copy Prompt Button */}
-        <button
-          onClick={handleCopyPrompt}
-          className={`flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-xl font-bold text-xs transition-all shadow-md shrink-0 ${
-            copied
-              ? 'bg-emerald-600 text-white shadow-emerald-600/30'
-              : 'bg-gradient-to-r from-brand-600 to-purple-600 hover:from-brand-500 hover:to-purple-500 text-white shadow-brand-500/20'
-          }`}
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-white shrink-0" />
-              <span>Copied to Clipboard!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5 text-white shrink-0" />
-              <span>Copy Prompt</span>
-            </>
-          )}
-        </button>
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Live Run Prompt Button */}
+          <button
+            onClick={handleRunLivePrompt}
+            disabled={isRunningLive}
+            className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 hover:border-cyan-400 transition-all shadow-sm shrink-0"
+            title="Test run this prompt directly with AI"
+          >
+            {isRunningLive ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-300" />
+                <span>Running...</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400/20" />
+                <span>Test Run Live</span>
+              </>
+            )}
+          </button>
+
+          {/* Copy Prompt Button */}
+          <button
+            onClick={handleCopyPrompt}
+            className={`flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-xl font-bold text-xs transition-all shadow-md shrink-0 ${
+              copied
+                ? 'bg-emerald-600 text-white shadow-emerald-600/30'
+                : 'bg-gradient-to-r from-brand-600 to-purple-600 hover:from-brand-500 hover:to-purple-500 text-white shadow-brand-500/20'
+            }`}
+          >
+            {copied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-white shrink-0" />
+                <span>Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5 text-white shrink-0" />
+                <span>Copy Prompt</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -125,6 +183,41 @@ export const PromptEditorCard: React.FC<PromptEditorCardProps> = ({
           </div>
         )}
 
+        {/* Live Output Drawer / Card */}
+        {showOutputModal && (
+          <div className="mt-4 pt-4 border-t border-cyan-500/30 animate-in fade-in">
+            <div className="p-4 rounded-xl bg-slate-950/90 border border-cyan-500/40 space-y-2 shadow-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
+                  <MessageSquare className="w-4 h-4 text-cyan-400" />
+                  <span>Live AI Execution Result:</span>
+                </div>
+                <button
+                  onClick={() => setShowOutputModal(false)}
+                  className="text-[11px] text-slate-400 hover:text-white transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+
+              {isRunningLive ? (
+                <div className="py-6 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs">
+                  <RefreshCw className="w-5 h-5 animate-spin text-cyan-400" />
+                  <span>Streaming response from AI model...</span>
+                </div>
+              ) : liveError ? (
+                <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs">
+                  {liveError}
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-slate-200 text-xs whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto font-sans">
+                  {liveOutput}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Prompt Explanation Accordion */}
         <div className="mt-4 pt-3 border-t border-slate-800/60">
           <button
@@ -159,3 +252,4 @@ export const PromptEditorCard: React.FC<PromptEditorCardProps> = ({
     </div>
   );
 };
+

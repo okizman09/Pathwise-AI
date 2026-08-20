@@ -5,22 +5,38 @@ import { getGeminiApiKey, generateWorkflowWithGemini, generateQuestionnaireWithG
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
 export async function fetchQuestionnaireFromAPI(goal: string): Promise<QuestionnaireItem[]> {
-  try {
-    return await generateQuestionnaireWithGemini(goal);
-  } catch (err) {
-    console.warn('Error fetching questionnaire from Gemini API:', err);
-    return getFallbackQuestionnaire(goal);
+  // If user configured Gemini API key, use direct live AI generation
+  if (getGeminiApiKey()) {
+    try {
+      const liveQuestions = await generateQuestionnaireWithGemini(goal);
+      if (liveQuestions && liveQuestions.length > 0) {
+        return liveQuestions;
+      }
+    } catch (err) {
+      console.warn('Error fetching live questionnaire from Gemini API:', err);
+    }
   }
+
+  return getFallbackQuestionnaire(goal);
 }
 
 export async function fetchWorkflowFromAPI(
   goal: string,
   assumptions?: Record<string, string>
 ): Promise<WorkflowResult> {
-  // 1. Attempt FastAPI backend first if available
+  // 1. Direct client-side Gemini API call (fastest, direct AI generation with user API key)
+  if (getGeminiApiKey()) {
+    try {
+      return await generateWorkflowWithGemini(goal, assumptions);
+    } catch (geminiErr) {
+      console.warn('Direct Gemini API request failed. Trying backend service:', geminiErr);
+    }
+  }
+
+  // 2. Attempt FastAPI backend if client API call had an issue or no client key
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout for AI generation
 
     const response = await fetch(`${API_BASE_URL}/workflows/generate`, {
       method: 'POST',
@@ -41,18 +57,9 @@ export async function fetchWorkflowFromAPI(
       return data as WorkflowResult;
     }
   } catch (error) {
-    // FastAPI backend is offline or unreachable - continuing to client fallback
+    // FastAPI backend is offline or unreachable - continuing to fallback
   }
 
-  // 2. Direct client-side Gemini API call if API Key is configured
-  if (getGeminiApiKey()) {
-    try {
-      return await generateWorkflowWithGemini(goal, assumptions);
-    } catch (geminiErr) {
-      console.warn('Direct Gemini API request failed. Falling back to local smart engine:', geminiErr);
-    }
-  }
-
-  // 3. Graceful fallback to client-side smart workflow generator
+  // 3. Smart domain engine fallback
   return generateWorkflowFromGoal(goal, assumptions);
 }

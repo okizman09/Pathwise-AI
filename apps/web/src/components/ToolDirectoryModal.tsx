@@ -57,10 +57,14 @@ export const ToolDirectoryModal: React.FC<ToolDirectoryModalProps> = ({ isOpen, 
       !query ||
       t.name.toLowerCase().includes(query) ||
       t.description.toLowerCase().includes(query) ||
-      t.category.toLowerCase().includes(query) ||
+      (t.category && t.category.toLowerCase().includes(query)) ||
+      (t.vendor && t.vendor.toLowerCase().includes(query)) ||
       (t.bestApplication && t.bestApplication.toLowerCase().includes(query)) ||
       (t.badge && t.badge.toLowerCase().includes(query)) ||
-      t.keyFeatures.some((f) => f.toLowerCase().includes(query));
+      (t.keyFeatures && t.keyFeatures.some((f) => f.toLowerCase().includes(query))) ||
+      (t.tags && t.tags.some((tag) => tag.toLowerCase().includes(query))) ||
+      (t.capabilities && t.capabilities.some((cap) => cap.toLowerCase().includes(query))) ||
+      (t.supportedTasks && t.supportedTasks.some((task) => task.toLowerCase().includes(query)));
 
     return matchesCat && matchesSearch;
   });
@@ -366,6 +370,63 @@ export const ToolDirectoryModal: React.FC<ToolDirectoryModalProps> = ({ isOpen, 
                 </p>
               </div>
 
+              {/* Strengths & Limitations */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {activePlaybookTool.strengths && activePlaybookTool.strengths.length > 0 && (
+                  <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/20 space-y-1.5">
+                    <h5 className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Key Strengths</h5>
+                    <ul className="text-xs text-emerald-100/90 space-y-1 list-disc list-inside">
+                      {activePlaybookTool.strengths.map((s, idx) => (
+                        <li key={idx}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {activePlaybookTool.limitations && activePlaybookTool.limitations.length > 0 && (
+                  <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/20 space-y-1.5">
+                    <h5 className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Known Limitations</h5>
+                    <ul className="text-xs text-amber-100/90 space-y-1 list-disc list-inside">
+                      {activePlaybookTool.limitations.map((l, idx) => (
+                        <li key={idx}>{l}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              {/* Capabilities & Relationships */}
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider w-full mb-1">Capabilities & Tasks:</span>
+                  {activePlaybookTool.capabilities?.map((cap) => (
+                    <span key={cap} className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-800 text-cyan-300 border border-slate-700">
+                      #{cap}
+                    </span>
+                  ))}
+                  {activePlaybookTool.supportedTasks?.map((task) => (
+                    <span key={task} className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-purple-950/40 text-purple-300 border border-purple-800/40">
+                      🎯 {task}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Complements & Alternatives */}
+                <div className="pt-2 flex flex-wrap gap-3 text-xs border-t border-slate-800">
+                  {activePlaybookTool.complements && activePlaybookTool.complements.length > 0 && (
+                    <div>
+                      <span className="text-slate-400 font-semibold">Complements: </span>
+                      <span className="text-cyan-300">{activePlaybookTool.complements.join(', ')}</span>
+                    </div>
+                  )}
+                  {activePlaybookTool.alternatives && activePlaybookTool.alternatives.length > 0 && (
+                    <div>
+                      <span className="text-slate-400 font-semibold">Alternatives: </span>
+                      <span className="text-slate-300">{activePlaybookTool.alternatives.join(', ')}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Description */}
               <div className="space-y-1">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Overview</h4>
@@ -403,9 +464,9 @@ export const ToolDirectoryModal: React.FC<ToolDirectoryModalProps> = ({ isOpen, 
 
               {/* Action Buttons */}
               <div className="pt-2 flex items-center justify-between gap-3 border-t border-slate-800">
-                <span className="text-xs text-slate-400">Skill Level: <strong className="text-white">{activePlaybookTool.skillLevel}</strong></span>
+                <span className="text-xs text-slate-400">Skill Level: <strong className="text-white capitalize">{activePlaybookTool.skillLevel}</strong></span>
                 <a
-                  href={activePlaybookTool.websiteUrl}
+                  href={activePlaybookTool.officialUrl || activePlaybookTool.websiteUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold shadow-lg transition-all"

@@ -152,6 +152,18 @@ export default function App() {
     }, 100);
   };
 
+  const handleRefineQuery = async (refinedQuery: string) => {
+    setCurrentGoal(refinedQuery);
+    setIsLoading(true);
+    try {
+      const result = await fetchWorkflowFromAPI(refinedQuery);
+      setActiveWorkflow(result);
+      setAppStage('workflow');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const isCurrentSaved = activeWorkflow ? savedWorkflows.some((s) => s.id === activeWorkflow.id) : false;
 
   return (
@@ -201,6 +213,7 @@ export default function App() {
               workflow={activeWorkflow}
               onSaveWorkflow={handleSaveWorkflow}
               isSaved={isCurrentSaved}
+              onRefineQuery={handleRefineQuery}
             />
           </div>
         )}

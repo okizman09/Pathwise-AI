@@ -5,7 +5,10 @@
   "description": "Pathwise AI - No-Overwhelm AI Tool & Prompt Guidance",
   "scripts": {
     "dev": "npm --prefix apps/web run dev",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:api": "cd apps/api && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "npm --prefix apps/web run build",
-    "preview": "npm --prefix apps/web run preview"
+    "preview": "npm --prefix apps/web run preview",
+    "test": "npm --prefix apps/web test"
   }
 }

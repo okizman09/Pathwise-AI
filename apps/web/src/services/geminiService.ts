@@ -1,10 +1,12 @@
 import { WorkflowResult, Tool } from '../types';
 import { CURATED_TOOLS } from '../data/knowledgeData';
+import { getVerifiedCandidatePool, extractUserIntent, buildDeterministicPipeline } from './recommendationEngine';
+import { validateAndHydrateWorkflow } from './pipelineValidator';
 
 const KEY_STORAGE_KEY = 'pathwise_gemini_api_key';
 const MODEL_STORAGE_KEY = 'pathwise_gemini_model';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash-latest';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 export interface ModelOption {
   id: string;
@@ -20,13 +22,11 @@ export interface QuestionnaireItem {
 }
 
 export const FALLBACK_GEMINI_MODELS: ModelOption[] = [
-  { id: 'gemini-1.5-flash-latest', name: 'Gemini 1.5 Flash (Latest)', recommended: true },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-  { id: 'gemini-1.5-flash-001', name: 'Gemini 1.5 Flash (v001)' },
-  { id: 'gemini-1.5-flash-002', name: 'Gemini 1.5 Flash (v002)' },
-  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash (Experimental)' },
-  { id: 'gemini-1.5-pro-latest', name: 'Gemini 1.5 Pro (Latest)' },
-  { id: 'gemini-pro', name: 'Gemini 1.0 Pro' },
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Fast & Reliable)', recommended: true },
+  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
+  { id: 'gemini-flash-latest', name: 'Gemini Flash (Latest)' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
 ];
 
 export function getGeminiApiKey(): string {
@@ -104,7 +104,7 @@ export async function fetchAvailableModels(apiKey?: string, forceRefresh = false
 }
 
 /**
- * Helper to call Gemini REST API with rate-limit detection and model fallback.
+ * Helper to call Gemini REST API with rate-limit detection and automatic multi-model fallback.
  */
 async function fetchGeminiApi(
   apiKey: string,
@@ -119,16 +119,18 @@ async function fetchGeminiApi(
     // fallback if list API fails
   }
 
+  // Prioritize reliable, high-quota models
   const candidateModels = Array.from(new Set([
+    'gemini-3.1-flash-lite',
     preferredModel,
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.7-flash',
     ...availableModelIds,
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash',
-    'gemini-1.5-flash-001',
-    'gemini-1.5-flash-002',
-    'gemini-2.0-flash-exp',
-    'gemini-1.5-pro-latest',
-    'gemini-pro'
+    'gemini-2.5-flash',
+    'gemini-3.1-pro-preview',
+    'gemini-pro-latest'
   ])).filter(m => !m.toLowerCase().includes('-tts') && !m.toLowerCase().includes('embedding'));
 
   let lastErrorMsg = '';
@@ -155,22 +157,14 @@ async function fetchGeminiApi(
       const msg = errData.error?.message || `HTTP ${response.status}`;
       lastErrorMsg = msg;
 
-      if (response.status === 429 || msg.includes('Quota exceeded') || msg.includes('RESOURCE_EXHAUSTED')) {
-        throw new Error(`Gemini Free Tier Rate Limit reached. Please wait a moment before retrying.`);
-      }
-
       if (response.status === 400 && msg.includes('API_KEY_INVALID')) {
         throw new Error(`Invalid Gemini API Key: ${msg}`);
       }
 
-      if (!msg.toLowerCase().includes('not found') && !msg.toLowerCase().includes('supported') && response.status !== 404) {
-        throw new Error(msg);
-      }
+      // If 429 (quota), 503 (high demand), or 404 (not found), continue to next model in loop
+      console.warn(`Model ${model} returned ${response.status} (${msg}). Trying next available model...`);
     } catch (err: any) {
-      if (err.message && (err.message.includes('Rate Limit') || err.message.includes('Quota exceeded') || err.message.includes('API_KEY_INVALID'))) {
-        throw err;
-      }
-      if (err.message && !err.message.toLowerCase().includes('not found') && !err.message.toLowerCase().includes('supported')) {
+      if (err.message && err.message.includes('API_KEY_INVALID')) {
         throw err;
       }
       lastErrorMsg = err.message || 'Model call failed.';
@@ -249,23 +243,21 @@ export async function generateQuestionnaireWithGemini(goal: string): Promise<Que
   const prompt = `You are Pathwise AI — an intelligent creation assistant designed for creators, beginners, and professionals.
 The user wants to create: "${goal}".
 
-Generate 2-3 simple, user-friendly multiple-choice follow-up questions to understand their target platform, visual/content style, format, or budget BEFORE generating a workflow.
+Generate at most 2 simple, user-friendly multiple-choice follow-up questions to resolve high-impact ambiguities before generating a workflow.
 
-CRITICAL NON-TECHNICAL RULES:
-1. NEVER ask the user to choose or select specific AI tool names (e.g. DO NOT ask "Do you prefer Runway, Kling AI, or Pika?"). The user does NOT know AI tool names yet — that is Pathwise AI's job to recommend!
-2. Focus questions purely on user outcomes and preferences:
-   - Target Platform / Publishing Format (e.g., Short-form YouTube Shorts/TikTok vs Long-form YouTube vs Website)
-   - Visual & Aesthetic Preference (e.g., Photorealistic AI B-Roll, Animated Illustration, Faceless Captions, Clean UI Dashboard)
-   - Audio & Narration Style (e.g., Natural AI Voiceover + Background Score, Personal Voice Recording, Text & Captions Only)
-   - Budget Preference (e.g., 100% Free & Freemium Tools, Professional Quality AI Tools)
+CRITICAL TASK INTELLIGENCE RULES:
+1. MAXIMUM 2 QUESTIONS: Return at most 2 high-impact ambiguity clarification questions.
+2. ONLY HIGH-IMPACT AMBIGUITIES: Only ask questions if the user's intent leaves a major structural ambiguity (e.g. application submission system vs informational landing page, direct chat embed vs custom dashboard).
+3. DO NOT ASSUME A TECH STACK: Do not assume a specific technology stack unless the user explicitly specified one.
+4. NEVER ASK TOOL NAMES: Never ask the user to choose AI tool names (e.g. do not ask "Do you want to use Voiceflow or Botpress?"). The user does NOT know AI tools yet — that is Pathwise AI's job!
 
-Return ONLY a valid JSON array of objects with this structure without any markdown:
+Return ONLY a valid JSON array of at most 2 objects with this structure:
 [
   {
-    "id": "format",
-    "question": "Where will you publish or use this content?",
-    "options": ["YouTube Shorts / TikTok (Short-form)", "YouTube Channel (Long-form)", "Social Media & Website"],
-    "defaultOption": "YouTube Shorts / TikTok (Short-form)"
+    "id": "ambiguity_field",
+    "question": "Clear, non-technical question?",
+    "options": ["Option 1", "Option 2", "Option 3"],
+    "defaultOption": "Option 1"
   }
 ]`;
 
@@ -295,9 +287,59 @@ Return ONLY a valid JSON array of objects with this structure without any markdo
 }
 
 export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
+  const intent = extractUserIntent(goal);
+  if (intent.ambiguities && intent.ambiguities.length > 0) {
+    return intent.ambiguities.slice(0, 2).map(a => ({
+      id: a.field,
+      question: a.question,
+      options: a.options || ['Yes / Direct Integration', 'No / External Link', 'General Info'],
+      defaultOption: a.defaultOption || (a.options ? a.options[0] : 'Yes / Direct Integration')
+    }));
+  }
+
   const g = goal.toLowerCase();
   
-  // 1. Trading / Forex / EA (Use regex word boundaries so "create" doesn't match "ea"!)
+  // 1. Content / Blog / Article / Social Media / Copywriting / Newsletter
+  const isContent = /\b(blog|post|article|write|writing|copy|copywriting|newsletter|social media|linkedin|twitter|thread|content|seo|essay|story|marketing copy)\b/i.test(g);
+  if (isContent) {
+    return [
+      {
+        id: 'post_type',
+        question: 'What type or format of blog post do you want to create?',
+        options: [
+          'Actionable How-To Guide / Tutorial',
+          'Thought Leadership & Industry Trends',
+          'Curated Listicle / Best Tools Roundup',
+          'Story-Driven Case Study & Lessons'
+        ],
+        defaultOption: 'Actionable How-To Guide / Tutorial'
+      },
+      {
+        id: 'target_platform',
+        question: 'Which primary platform and social channels will you publish on?',
+        options: [
+          'Multi-Platform (Blog + LinkedIn + X/Twitter Thread)',
+          'LinkedIn Article & Carousel Summary',
+          'Medium / Substack Newsletter',
+          'Company Blog / SEO Website'
+        ],
+        defaultOption: 'Multi-Platform (Blog + LinkedIn + X/Twitter Thread)'
+      },
+      {
+        id: 'tone_style',
+        question: 'What tone of voice fits your target audience?',
+        options: [
+          'Conversational, Punchy & Engaging',
+          'Authoritative, Data-Driven & Professional',
+          'Inspiring, Personal & Story-Led',
+          'Direct, Practical & Step-by-Step'
+        ],
+        defaultOption: 'Conversational, Punchy & Engaging'
+      }
+    ];
+  }
+
+  // 2. Trading / Forex / EA (Use regex word boundaries so "create" doesn't match "ea"!)
   const isTrading = /\b(trading|ea|expert advisor|forex|mql|mql4|mql5|pinescript|metatrader|crypto bot)\b/i.test(g);
   if (isTrading) {
     return [
@@ -322,7 +364,7 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
-  // 2. Video / YouTube / Shorts / Reel
+  // 3. Video / YouTube / Shorts / Reel
   const isVideo = /\b(video|youtube|short|shorts|reel|tiktok|movie|film|animation)\b/i.test(g);
   if (isVideo) {
     return [
@@ -347,7 +389,45 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
-  // 3. Coding / Web / App / Script
+  // 4. Chatbots, AI Agents, Customer Support & Assistants
+  const isChatbot = /\b(chatbot|bot|agent|assistant|chat|support|rag|knowledge base)\b/i.test(g);
+  if (isChatbot) {
+    return [
+      {
+        id: 'primary_use_case',
+        question: 'What is the primary role and purpose of your AI chatbot?',
+        options: [
+          'Customer Support & FAQ Answering',
+          'RAG Knowledge Base & Document Q&A (PDFs/Notion)',
+          'Lead Generation, Sales & Appointment Booking',
+          'Community Moderation & Engagement (Slack/Discord)'
+        ],
+        defaultOption: 'Customer Support & FAQ Answering'
+      },
+      {
+        id: 'deployment_platform',
+        question: 'Where do you plan to deploy your chatbot?',
+        options: [
+          'Embeddable Website Popup Widget',
+          'Messaging App (WhatsApp, Telegram, Slack)',
+          'Fullstack Web Application / Custom UI',
+          'Internal Team Dashboard'
+        ],
+        defaultOption: 'Embeddable Website Popup Widget'
+      },
+      {
+        id: 'technical_stack',
+        question: 'What is your preferred development approach?',
+        options: [
+          'Visual No-Code Builder (Voiceflow / Botpress / Chatbase)',
+          'Developer Framework (LangChain / Next.js / OpenAI Assistants API)'
+        ],
+        defaultOption: 'Visual No-Code Builder (Voiceflow / Botpress / Chatbase)'
+      }
+    ];
+  }
+
+  // 5. Coding / Web / App / Script
   const isCoding = /\b(code|coding|script|app|web|python|react|fullstack|api|developer)\b/i.test(g);
   if (isCoding) {
     return [
@@ -366,7 +446,7 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
-  // 4. Music / Audio / Song
+  // 5. Music / Audio / Song
   const isAudio = /\b(song|music|audio|podcast|track|beat|lofi|voiceover)\b/i.test(g);
   if (isAudio) {
     return [
@@ -379,7 +459,7 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
     ];
   }
 
-  // 5. General Fallback
+  // 6. General Fallback
   return [
     {
       id: 'output_type',
@@ -397,7 +477,22 @@ export function getFallbackQuestionnaire(goal: string): QuestionnaireItem[] {
 }
 
 /**
- * Generates a domain-accurate, highly practical workflow using Gemini AI reasoning based on user answers.
+ * PHASE 11 — GEMINI EXPLANATION & SYNTHESIS LAYER
+ *
+ * CORE PRINCIPLE: "LLM = interpretation, language, reasoning, explanation.
+ * Pathwise database + deterministic engine = truth."
+ *
+ * Gemini MUST NEVER invent:
+ * - tools, tool IDs, URLs, capabilities, pricing, task compatibility
+ *
+ * Gemini may ONLY:
+ * 1. Explain why selected tools fit the requirements.
+ * 2. Explain tradeoffs between primary and alternative tools.
+ * 3. Explain how the user should use each tool step by step.
+ * 4. Improve natural-language guidance and step descriptions.
+ * 5. Personalize prompt templates using verified project information.
+ *
+ * The deterministic pipeline runs FIRST. Gemini enhances the output only.
  */
 export async function generateWorkflowWithGemini(
   goal: string,
@@ -410,155 +505,147 @@ export async function generateWorkflowWithGemini(
 
   const model = getGeminiModel();
 
-  const toolsSummary = CURATED_TOOLS.map(t => ({
-    id: t.id,
-    name: t.name,
-    category: t.category,
-    description: t.description,
-    bestApplication: t.bestApplication
+  // === STEP 1: Run deterministic pipeline FIRST (ground truth) ===
+  // This builds the verified workflow: intent, profile, requirements, tasks, tools, prompts
+  const deterministicResult = buildDeterministicPipeline(goal, explicitAssumptions);
+
+  // === STEP 2: Package full intelligence context for Gemini ===
+  const profile = deterministicResult.understanding;
+  const requirementsList = deterministicResult.requirementsList || [];
+  const selectedTools = deterministicResult.steps.map(s => ({
+    step: s.stepNumber,
+    task: s.task || s.category,
+    toolId: s.primaryTool.id,
+    toolName: s.primaryTool.name,
+    officialUrl: s.primaryTool.officialUrl,
+    pricing: `${s.primaryTool.pricing.model}${s.primaryTool.pricing.freeTier ? ' (free tier available)' : ''}`,
+    whyChosen: s.reasoningEvidence || s.primaryTool.whyRecommended,
+    promptTitle: s.prompt.title,
+    promptTemplate: s.prompt.rawTemplate
   }));
 
-  const userSpecsText = explicitAssumptions ? JSON.stringify(explicitAssumptions) : 'Standard defaults';
+  const requirementContext = requirementsList.map(r =>
+    `  - ${r.requirement}: ${r.confidence} (${r.source === 'user' ? 'stated by user' : 'inferred'})`
+  ).join('\n');
 
-  const systemPrompt = `You are Pathwise AI — an intelligent, domain-expert AI workflow architect.
+  const workflowContext = deterministicResult.steps.map(s =>
+    `  Step ${s.stepNumber}: ${s.title}\n  Tool: ${s.primaryTool.name} (${s.primaryTool.id})\n  Prompt Title: "${s.prompt.title}"\n  Prompt Template: "${s.prompt.rawTemplate.substring(0, 200)}..."`
+  ).join('\n\n');
 
-User Goal: "${goal}"
-User Specified Answers / Preferences: ${userSpecsText}
+  const userSpecsText = explicitAssumptions && Object.keys(explicitAssumptions).length > 0
+    ? JSON.stringify(explicitAssumptions, null, 2)
+    : 'No additional specs provided.';
 
-Available Tools Index:
-${JSON.stringify(toolsSummary)}
+  // === STEP 3: Constrained Gemini system prompt (explanation/synthesis only) ===
+  const systemPrompt = `You are the EXPLANATION and SYNTHESIS layer for Pathwise AI.
 
-CRITICAL WORKFLOW & TOOL RULES:
-1. SPECIALIZED MULTI-TOOL PIPELINES:
-   - Do NOT recommend the exact same tool (e.g. ChatGPT) for all 3 steps!
-   - Each step of the workflow MUST recommend the most specialized tool for that specific phase:
-     * Phase 1 (Scripting / Specs / Copywriting): Use ChatGPT ('chatgpt') or Claude ('claude').
-     * Phase 2 (Creation / Rendering / Coding / B-Roll): Use specialized engines like Kling AI ('kling'), Runway Gen-3 ('runway'), v0 ('v0'), Bolt ('bolt'), Antigravity AI ('antigravity'), or Midjourney ('midjourney').
-     * Phase 3 (Audio / Deployment / Optimization): Use specialized tools like ElevenLabs ('elevenlabs'), Udio ('udio'), Framer ('framer'), or Phind ('phind').
+============================================================
+USER GOAL: "${goal}"
+USER SPECS: ${userSpecsText}
+============================================================
 
-2. MATCH AVAILABLE TOOL IDs:
-   - Always reference the exact 'id' from the Available Tools Index (e.g. "chatgpt", "kling", "runway", "elevenlabs", "udio", "v0", "bolt", "antigravity", "claude", "framer").
+PROJECT UNDERSTANDING (deterministically computed):
+  - Project Type: ${profile?.projectType || deterministicResult.category}
+  - Complexity: ${profile?.complexity || deterministicResult.difficulty}
+  - Coding Required: ${profile?.codingRequired ? 'Yes' : 'No'}
+  - Primary Outcome: ${profile?.primaryOutcome || deterministicResult.summary}
 
-3. DYNAMIC PROMPTS & VARIABLE PLACEHOLDERS:
-   - Write realistic, production-ready prompts tailored specifically to "${goal}" and ${userSpecsText}.
-   - Include 2-4 editable variables with curly braces like {script_topic}, {video_style}, {brand_name}, {target_audience}.
+REQUIREMENTS (Pathwise Intelligence Layer — DO NOT MODIFY):
+${requirementContext || '  - No specific requirements extracted'}
 
-Return ONLY a valid JSON object matching this exact TypeScript structure without any markdown formatting or extra text:
+SELECTED TOOLS & WORKFLOW (Pathwise Deterministic Engine — CANONICAL TRUTH):
+${workflowContext}
+
+============================================================
+YOUR ROLE — STRICTLY EXPLANATION & SYNTHESIS ONLY
+============================================================
+
+You may ONLY:
+1. Write clear, personalized step titles and descriptions tailored to "${goal}".
+2. Explain WHY each selected tool fits the requirements (use specific evidence from above).
+3. Describe tradeoffs between the primary and alternative tools.
+4. Write guidance on HOW the user should use each tool (step by step).
+5. Personalize prompt templates using verified project information from above.
+6. Write practical proTips for each step.
+
+You MUST NOT:
+- Invent new tools not listed in the SELECTED TOOLS section above.
+- Change, modify, or invent tool IDs (use exactly as listed: ${selectedTools.map(t => t.toolId).join(', ')}).
+- Invent or modify URLs. URLs must be exactly as provided.
+- Invent pricing. Pricing must match what is provided.
+- Add technical requirements (e.g., database, auth, APIs) not present in REQUIREMENTS above.
+- Introduce technologies that are not present in the project requirements.
+- Change the number of workflow steps.
+
+============================================================
+OUTPUT FORMAT — Return ONLY valid JSON, no markdown:
+============================================================
 {
   "id": "wf-gemini-${Date.now()}",
   "goal": "${goal}",
-  "category": "Domain Category (e.g. Video Production, Web App, Music)",
-  "summary": "Clear 1-2 sentence executive summary of the specialized multi-tool pipeline.",
-  "difficulty": "Beginner / Intermediate / Advanced",
-  "totalTime": "30-45 minutes",
-  "triageAssumptions": [
-    {
-      "id": "format",
-      "category": "Format",
-      "label": "Selected Format",
-      "currentValue": "User choice",
-      "options": ["Option 1", "Option 2"]
-    }
-  ],
+  "category": "${deterministicResult.category}",
+  "summary": "1-2 sentence natural language summary for the user, personalized to their exact goal.",
+  "difficulty": "${deterministicResult.difficulty}",
+  "totalTime": "${deterministicResult.totalTime}",
+  "triageAssumptions": ${JSON.stringify(deterministicResult.triageAssumptions)},
   "steps": [
-    {
-      "stepNumber": 1,
-      "title": "Step 1 Title (e.g. Write Script & Storyboard)",
-      "description": "Clear step description.",
-      "category": "Scriptwriting & Specs",
+${deterministicResult.steps.map(s => `    {
+      "stepNumber": ${s.stepNumber},
+      "title": "Improved action-oriented title for Step ${s.stepNumber} referencing ${s.primaryTool.name}",
+      "description": "Clear 2-3 sentence explanation of what the user does in this step and why, personalized to ${goal}.",
+      "category": "${s.category}",
       "primaryTool": {
-        "id": "chatgpt",
-        "name": "ChatGPT (GPT-4o)",
-        "category": "Content",
-        "whyRecommended": "Why this specific tool for this phase."
+        "id": "${s.primaryTool.id}",
+        "name": "${s.primaryTool.name}",
+        "whyRecommended": "1-2 sentence explanation specific to this user's goal and requirements."
       },
+      "alternativeTools": ${JSON.stringify(s.alternativeTools.slice(0, 1).map(a => ({ id: a.id, name: a.name })))},
       "prompt": {
-        "id": "p-1",
-        "title": "Production Prompt Title",
-        "targetTool": "ChatGPT (GPT-4o)",
-        "stepNumber": 1,
-        "rawTemplate": "High quality prompt with {variables}...",
-        "variables": [
-          {
-            "key": "script_topic",
-            "label": "Topic",
-            "defaultValue": "${goal}",
-            "placeholder": "Describe topic"
-          }
-        ],
-        "explanation": "Why this prompt structure works.",
-        "bestPractices": ["Tip 1", "Tip 2"]
+        "id": "${s.prompt.id}",
+        "title": "${s.prompt.title}",
+        "targetTool": "${s.primaryTool.name}",
+        "stepNumber": ${s.stepNumber},
+        "rawTemplate": "${s.prompt.rawTemplate.replace(/"/g, '\\"').replace(/\n/g, '\\n')}",
+        "variables": ${JSON.stringify(s.prompt.variables)},
+        "explanation": "Explanation of how to use this prompt in ${s.primaryTool.name}, specific to ${goal}.",
+        "bestPractices": ["Practical tip 1 for ${s.primaryTool.name}", "Practical tip 2"]
       },
-      "estimatedTime": "10 mins",
-      "proTip": "Actionable pro tip for Step 1."
-    }
+      "estimatedTime": "${s.estimatedTime}",
+      "proTip": "Practical actionable tip for this exact step."
+    }`).join(',\n')}
   ]
 }`;
 
-  const { data } = await fetchGeminiApi(apiKey, model, {
-    contents: [{ parts: [{ text: systemPrompt }] }],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 2500,
-      responseMimeType: 'application/json'
-    }
-  });
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!rawText) {
-    throw new Error('Gemini API returned an empty output.');
-  }
-
-  const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-  const parsed = JSON.parse(cleanedText) as WorkflowResult;
-
-  // Hydrate tools against CURATED_TOOLS for full metadata & alternative tools
-  if (parsed && Array.isArray(parsed.steps)) {
-    parsed.steps = parsed.steps.map(step => {
-      const toolId = step.primaryTool?.id?.toLowerCase() || '';
-      const toolName = step.primaryTool?.name?.toLowerCase() || '';
-
-      // Match against CURATED_TOOLS
-      let curatedMatch = CURATED_TOOLS.find(t => t.id.toLowerCase() === toolId || t.name.toLowerCase().includes(toolId));
-      if (!curatedMatch && toolName) {
-        curatedMatch = CURATED_TOOLS.find(t => t.name.toLowerCase().includes(toolName));
+  try {
+    const { data } = await fetchGeminiApi(apiKey, model, {
+      contents: [{ parts: [{ text: systemPrompt }] }],
+      generationConfig: {
+        temperature: 0.25,
+        maxOutputTokens: 4000,
+        responseMimeType: 'application/json'
       }
-
-      const hydratedPrimary: Tool = curatedMatch
-        ? {
-            ...curatedMatch,
-            whyRecommended: step.primaryTool?.whyRecommended || curatedMatch.whyRecommended
-          }
-        : {
-            id: step.primaryTool?.id || 'tool-gen',
-            name: step.primaryTool?.name || 'AI Tool',
-            category: (step.category || 'Content') as Tool['category'],
-            description: step.primaryTool?.description || 'Specialized AI tool for this workflow step.',
-            bestApplication: step.primaryTool?.bestApplication || 'Executing step tasks efficiently.',
-            pricingModel: 'Freemium',
-            pricingDetails: 'Free tier available',
-            skillLevel: 'Beginner',
-            websiteUrl: 'https://google.com/search?q=' + encodeURIComponent(step.primaryTool?.name || 'AI Tool'),
-            whyRecommended: step.primaryTool?.whyRecommended || 'Recommended for optimal results.',
-            rating: 4.8,
-            logoText: (step.primaryTool?.name || 'AI').substring(0, 2).toUpperCase(),
-            keyFeatures: ['AI Generation', 'Prompt Integration']
-          };
-
-      // Find alternative tools in the same or related category
-      const alternatives = CURATED_TOOLS.filter(t => t.id !== hydratedPrimary.id && (t.category === hydratedPrimary.category || t.category === step.category)).slice(0, 1);
-
-      return {
-        ...step,
-        primaryTool: hydratedPrimary,
-        alternativeTools: alternatives.length > 0 ? alternatives : step.alternativeTools
-      };
     });
-  }
 
-  return parsed;
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!rawText) {
+      throw new Error('Gemini API returned an empty output.');
+    }
+
+    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanedText);
+
+    // ALWAYS validate and hydrate to enforce canonical ground truth
+    return validateAndHydrateWorkflow(parsed, goal, explicitAssumptions);
+  } catch (err) {
+    // If Gemini enhancement fails for any reason, return deterministic pipeline (always safe)
+    console.warn('Gemini synthesis failed. Returning deterministic pipeline as fallback:', err);
+    return deterministicResult;
+  }
 }
+
+
+
 
 /**
  * Perform real AI analytics & tool evaluation on any search query using Gemini API.
